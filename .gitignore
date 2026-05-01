@@ -1,0 +1,5 @@
+.env
+data/
+# Local Docker overlay — may contain tokens; keep in sync with ~/.openclaw/openclaw.json when you change shared settings.
+openclaw.docker.json
+*.pyc

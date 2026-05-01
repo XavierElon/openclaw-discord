@@ -1,0 +1,106 @@
+# OpenClaw gateway + CLI sidecar (official layout, adapted).
+# Docs: https://docs.openclaw.ai/install/docker
+#
+# Prerequisites:
+#   1. Create dirs on the HOST (not iCloud if Docker has trouble):
+#        mkdir -p ./data/config ./data/workspace
+#   2. Prefer OPENCLAW_CONFIG_DIR=~/.openclaw in .env (shared with native CLI).
+#      openclaw.docker.json is bind-mounted over openclaw.json inside the container
+#      (run ./sync-docker-config.sh after editing the host file).
+#      Or copy state: cp -a ~/.openclaw/* ./data/config/
+#   3. Image: either build openclaw:local from the OpenClaw repo (./scripts/docker/setup.sh)
+#      or set OPENCLAW_IMAGE=ghcr.io/openclaw/openclaw:latest in .env
+#
+# Run:
+#   docker compose --env-file .env up -d openclaw-gateway
+#
+# If the container "starts" but shows Restarting: check logs — usually empty OPENCLAW_CONFIG_DIR
+# (use host ~/.openclaw) or missing DISCORD_BOT_TOKEN / OPENCLAW_GATEWAY_TOKEN in .env.
+#
+# CLI (cron, devices, config) — shares network with gateway:
+#   docker compose --env-file .env run --rm openclaw-cli cron list --token "$OPENCLAW_GATEWAY_TOKEN"
+
+services:
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      TZ: ${OPENCLAW_TZ:-America/Los_Angeles}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      # Channel / model secrets (add what openclaw.json references via env)
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./data/config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-./data/workspace}:/home/node/.openclaw/workspace
+      # Host uses ~/.openclaw/openclaw.json; Docker overlays this file (container paths + Control UI origins for --bind lan).
+      - ./openclaw.docker.json:/home/node/.openclaw/openclaw.json:ro
+      # Agent/cron state (sessions.json, etc.) stores macOS absolute paths from the native CLI. Without this,
+      # Linux tries mkdir('/Users') and fails with EACCES. Bind your real home at the same path (set OPENCLAW_HOST_HOME in .env if needed).
+      - ${OPENCLAW_HOST_HOME:-$HOME}:${OPENCLAW_HOST_HOME:-$HOME}
+      # Sessions resolve skills as ~/.nvm/.../openclaw/skills (HOME=/home/node in the image).
+      - ${OPENCLAW_NVM_DIR:-$HOME/.nvm}:/home/node/.nvm:ro
+      # Sandbox (optional): uncomment + set DOCKER_GID; see upstream docker-compose.yml
+      # - /var/run/docker.sock:/var/run/docker.sock
+    # group_add:
+    #   - "${DOCKER_GID:-999}"
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    init: true
+    restart: unless-stopped
+    command:
+      - node
+      - dist/index.js
+      - gateway
+      - --bind
+      - ${OPENCLAW_GATEWAY_BIND:-lan}
+      - --port
+      - "18789"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  openclaw-cli:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    network_mode: service:openclaw-gateway
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      TZ: ${OPENCLAW_TZ:-America/Los_Angeles}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      BROWSER: echo
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./data/config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-./data/workspace}:/home/node/.openclaw/workspace
+      # Host uses ~/.openclaw/openclaw.json; Docker overlays this file (container paths + Control UI origins for --bind lan).
+      - ./openclaw.docker.json:/home/node/.openclaw/openclaw.json:ro
+      - ${OPENCLAW_HOST_HOME:-$HOME}:${OPENCLAW_HOST_HOME:-$HOME}
+      - ${OPENCLAW_NVM_DIR:-$HOME/.nvm}:/home/node/.nvm:ro
+    stdin_open: true
+    tty: true
+    init: true
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-gateway
